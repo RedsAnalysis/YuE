@@ -1,6 +1,6 @@
 # Generate songs with YuE2
 
-Install from the repository root with Python 3.12 and `python -m pip install .`. The supported starting point is a BF16-capable NVIDIA GPU with 24 GB VRAM, one request at a time. The default output is 48 kHz stereo with full symbolic planning and the listening decoder, [YuE2-Vae](https://huggingface.co/m-a-p/YuE2-Vae).
+Install from the repository root with Python 3.12 and `python -m pip install .`, or with `uv sync` if you are working in this checkout (see [the uv guide](uv.md)). The supported starting point is a BF16-capable NVIDIA GPU with 24 GB VRAM, one request at a time. The default output is 48 kHz stereo with full symbolic planning and the listening decoder, [YuE2-Vae](https://huggingface.co/m-a-p/YuE2-Vae).
 
 ## Style, lyrics, and planning
 

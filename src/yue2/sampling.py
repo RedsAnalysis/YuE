@@ -55,7 +55,8 @@ def distribution(logits, sampling, history, step, phase, legacy_off=False):
 
 @torch.inference_mode()
 def generate_tokens(model, prefix, sampling, seed, phase, negative=None, cfg_scale=1.0,
-                    legacy_off=False, cancelled=None, on_token=None, use_cuda_graph=True):
+                    legacy_off=False, cancelled=None, on_token=None, use_cuda_graph=True,
+                    attention_backend="auto", fuse_projections=False):
     from .modeling_yue2 import StaticKVCache
     device = next(model.parameters()).device
     dtype = next(model.parameters()).dtype
@@ -89,7 +90,8 @@ def generate_tokens(model, prefix, sampling, seed, phase, negative=None, cfg_sca
     try:
         if graph_enabled:
             from .cuda_graph import GraphAR
-            graph = GraphAR(model, [prefix] if cfg_scale == 1 else [prefix, negative], sampling.max_tokens)
+            graph = GraphAR(model, [prefix] if cfg_scale == 1 else [prefix, negative], sampling.max_tokens,
+                            attention_backend=attention_backend, fuse_projections=fuse_projections)
             logits = graph.prefill()
             conditional = logits[:1]
             unconditional = logits[1:] if cfg_scale != 1 else None
@@ -144,7 +146,8 @@ def generate_tokens(model, prefix, sampling, seed, phase, negative=None, cfg_sca
                   "output_tps": count / seconds, "prefix_tokens": len(prefix),
                   "cfg_branches": 1 if cfg_scale == 1 else 2,
                   "execution": "cuda_graph" if graph is not None else "eager",
-                  "attention": graph.attention_backend if graph is not None else "sdpa"}
+                  "attention": graph.attention_backend if graph is not None else "sdpa",
+                  "fuse_projections": bool(fuse_projections and graph is not None)}
         if use_cuda_graph and not graph_enabled:
             timing["graph_fallback_reason"] = "fp8_not_graph_validated" if getattr(model, "_yue2_fp8_originals", {}) else "non_cuda_device"
         return history, timing, not eos

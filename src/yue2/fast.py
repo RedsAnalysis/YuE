@@ -319,7 +319,8 @@ def generate_vllm(pipe, prefix, sampling, seed, phase, negative=None, cfg_scale=
     if cancelled is not None and cancelled():
         raise InterruptedError("Cancelled before vLLM load")
     if importlib.util.find_spec("vllm") is None:
-        raise ImportError("Install the optional CUDA backend with pip install 'yue2-infer[fast]'")
+        raise ImportError("Install the optional CUDA backend with 'uv sync --extra fast' "
+                          "or pip install 'yue2-infer[fast]'")
     if getattr(pipe, "_vllm_worker", None) is None:
         import torch
         if pipe._model is not None:
@@ -366,10 +367,14 @@ async def _worker_main():
     if kv_bytes + weights_bytes + 3 * 2**30 > budget:
         raise MemoryError("Requested vLLM memory budget cannot fit full-context BF16 AR+KV+3GiB reserve")
     load_start = time.perf_counter()
+    # Inductor shells out to nvcc, which is absent from a CUDA-runtime-only
+    # install. YUE2_VLLM_ENFORCE_EAGER=1 skips compilation so the engine can
+    # still start; it trades vLLM's fused kernels for a working process.
+    enforce_eager = os.environ.get("YUE2_VLLM_ENFORCE_EAGER", "") == "1"
     args = AsyncEngineArgs(model=str(derived), skip_tokenizer_init=True, dtype="bfloat16",
                            max_model_len=CONTEXT, max_num_seqs=1, max_num_batched_tokens=2048,
                            enable_chunked_prefill=True, enable_prefix_caching=True,
-                           kv_cache_memory_bytes=kv_bytes,
+                           kv_cache_memory_bytes=kv_bytes, enforce_eager=enforce_eager,
                            gpu_memory_utilization=min(.9, (budget - 2 * 2**30) / total),
                            logits_processors=["yue2.fast:WindowedPenalty"], disable_log_stats=True)
     engine = AsyncLLM.from_engine_args(args)

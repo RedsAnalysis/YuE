@@ -10,6 +10,7 @@ import numpy as np
 import torch
 
 from .protocol import SongRequest, GenerationConfig, Sampling, token_prefixes, negative_prefix, CODEC_OFFSET, resolve_sampling
+from .perf import PerfProfile, apply_profile, default_profile_for, profile as named_profile
 from .storage import resolve_model, model_identity, identity, write_json, collect_hashes, sha256_file, copy_model_files
 from .tokenization_yue2 import YuE2TextTokenizer
 from .sampling import generate_tokens, synchronize
@@ -121,7 +122,8 @@ class SongResult:
 class YuE2Pipeline:
     def __init__(self, model_dir, vae_dir, *, device="auto", memory_budget_gib=24,
                  backend="torch", generation_config=None, verify_hashes=True,
-                 vae_core_frames=None, quantization="none", offload_ar=False, progress=True):
+                 vae_core_frames=None, quantization="none", offload_ar=False, progress=True,
+                 perf=None):
         if not isinstance(progress, bool):
             raise TypeError("progress must be True or False")
         self.progress = progress
@@ -136,16 +138,24 @@ class YuE2Pipeline:
         self.device = torch.device(device)
         if self.device.type == "cuda" and self.device.index is None:
             self.device = torch.device("cuda", torch.cuda.current_device())
-        torch.backends.cudnn.benchmark = False
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cuda.matmul.allow_tf32 = False
-        torch.backends.cudnn.allow_tf32 = False
-        torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
-        torch.set_float32_matmul_precision("highest")
+        if perf is None:
+            self.perf = default_profile_for(self.device)
+        elif isinstance(perf, PerfProfile):
+            self.perf = perf
+        elif isinstance(perf, str):
+            self.perf = named_profile(perf)
+        else:
+            raise TypeError("perf must be None, a profile name, or a PerfProfile")
+        apply_profile(self.perf, self.device)
         self.model_dir, self.vae_dir = Path(model_dir), Path(vae_dir)
         self.backend, self.quantization = backend, quantization
         self.memory_budget_gib = float(memory_budget_gib)
-        self.vae_core_frames = vae_core_frames if vae_core_frames is not None else (512 if memory_budget_gib <= 12 else 1024)
+        if vae_core_frames is not None:
+            self.vae_core_frames = vae_core_frames
+        elif self.perf.vae_core_frames is not None:
+            self.vae_core_frames = self.perf.vae_core_frames
+        else:
+            self.vae_core_frames = 512 if memory_budget_gib <= 12 else 1024
         self.offload_ar = offload_ar
         self.generation_config = generation_config or GenerationConfig()
         self.tokenizer = YuE2TextTokenizer(self.model_dir / "qwen.tiktoken")
@@ -247,7 +257,10 @@ class YuE2Pipeline:
                 result = generate_vllm(self, prefix, sampling, seed, phase, on_token=observed, **kwargs)
             else:
                 result = generate_tokens(model, prefix, sampling, seed, phase,
-                                         use_cuda_graph=self.backend != "torch-eager", on_token=observed, **kwargs)
+                                         use_cuda_graph=self.perf.cuda_graph and self.backend != "torch-eager",
+                                         attention_backend=self.perf.attention_backend,
+                                         fuse_projections=self.perf.fuse_projections,
+                                         on_token=observed, **kwargs)
             if result[2]:
                 status.finish(status="truncated")
             return result
@@ -368,6 +381,7 @@ class YuE2Pipeline:
                 "cot": request.cot, "cfg_scale": request.guidance,
                 "cfg_negative": "instruction_only" if request.cot == "off" else "same_instruction_and_exact_abc",
                 "backend": self.backend, "quantization": self.quantization,
+                "perf": self.perf.to_dict(),
                 "model_dtype": "bfloat16", "vae_dtype": "float32", "vae_decode": "halo_crop",
                 "vae_core_frames": self.vae_core_frames, "vae_halo_frames": 16,
                 "device": str(self.device), "memory_budget_gib": self.memory_budget_gib,
@@ -376,7 +390,7 @@ class YuE2Pipeline:
                 "validation_status": "unvalidated"}
 
     def __call__(self, style=None, lyrics=None, *, tags=None, abc_sampling=None,
-                 semantic_sampling=None, cancelled=None, on_token=None, **kwargs):
+                 semantic_sampling=None, cancelled=None, on_token=None, decode_full=False, **kwargs):
         request = self._request(style, lyrics, tags=tags, **kwargs)
         config = self.effective_config(request, abc_sampling, semantic_sampling)
         request_id = identity({"request": request.to_dict(), "config": config, "weights": self.weights})
@@ -389,7 +403,7 @@ class YuE2Pipeline:
         if cancelled is not None and cancelled():
             raise InterruptedError("Cancelled before VAE")
         vae_start = time.perf_counter()
-        audio = self.decode(latents)
+        audio = self.decode(latents, full=decode_full)
         timing = {"abc": plan.timing, "semantic": semantic.timing, "nar_seconds": nar_seconds,
                   "vae_seconds": time.perf_counter() - vae_start, "load": dict(self.load_timing),
                   "e2e_seconds": time.perf_counter() - start}

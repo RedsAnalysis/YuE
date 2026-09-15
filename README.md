@@ -94,6 +94,106 @@ with YuE2Pipeline.from_pretrained("m-a-p/YuE2-3B", device="cuda") as pipe:
 
 [Generation guide](docs/generation.md) · [Original example inputs](examples/README.md) · [v0.1.6 wheel archive](https://github.com/multimodal-art-projection/YuE/releases/download/yue2-v0.1.6/yue2_infer-0.1.6-py3-none-any.whl)
 
+## Local web UI and RTX 3090 tuning
+
+This working copy is managed with [uv](https://docs.astral.sh/uv/) and adds a
+Gradio front end plus a performance layer for local 24 GiB inference. See
+[the uv guide](docs/uv.md) for the environment, [the RTX 3090 notes](docs/optimization.md)
+for measured numbers, and [the changelog](CHANGELOG.md) for everything that changed.
+
+```bash
+make setup     # uv sync from uv.lock, then download the models
+make app       # Gradio UI (first free port from 7860; prints the URL)
+```
+
+`make help` lists every target (`test`, `bench`, `download`, `doctor`, `fast`, …).
+To drive uv yourself instead:
+
+```bash
+uv sync                                    # base + dev + ui + cover groups from uv.lock
+uv run python scripts/download_models.py   # -> models/YuE2-3B and models/YuE2-Vae
+uv run python app.py --model models/YuE2-3B --vae models/YuE2-Vae
+uv sync --extra fast                       # optional vLLM backend (~2 GB)
+```
+
+### The interface
+
+| Tab | What it is for |
+|---|---|
+| **Create** | Style, lyrics, **song length in seconds**, **prompt influence**, planning, quality, seed, loop tools, and the song library. |
+| **Cover from a recording** | Upload a song, transcribe its melody with [SheetSage2](https://huggingface.co/m-a-p/SheetSage2), review the editable score, re-render it in a new style. |
+| **Edit a song** | Load a saved score (or send the last result over), change notes/chords/tempo, render the revision. |
+| **Anime sounds** | **123 instrumental cues across 17 scene categories** for animation — suspense, combat, grief, comedy, morning routine and more. One click sends a cue to the generator. |
+| **Advanced** | Every backend, performance and sampling control, plus raw overrides for ODE steps and the token budget. |
+| **Hardware** | What the app detected, including whether FP8 and transcription are available. |
+
+Every song tab keeps a **library** of what you have generated, newest first,
+each with a player, its length, timestamp and style. **Clear output** on the
+Create tab can empty the list, delete only the audio, or wipe `runs/` entirely.
+
+### Anime cues
+
+`anime_cues.json` is the source of truth. Append a block to its `cues` array and
+press **Reload from disk** — no restart. Malformed entries are skipped and
+counted rather than breaking the tab. The categories, the defaults (30 s,
+instrumental, section plan) and every field are documented at the top of the
+file.
+
+### Loops
+
+YuE2 **cannot** place a loop point: the ABC score reaches it as prompt tokens
+only, so sections and tempo come back approximate. Measured — asked for five
+sections at 90 BPM, the model wrote one marker and chose 87 BPM. Length is the
+one exact control, at 25 frames per second.
+
+So loops are assembled **after** generation. **Loop tools** on the Create tab
+beat-tracks the rendered audio, snaps your window to whole bars, folds the ends
+into a seamless loop, and writes `loop.wav` plus `extended.flac`
+(intro + loop × N + outro) beside the cue. Seams are clean on sustained and
+ambient material and rougher on percussive cues.
+
+### Music only (no vocals)
+
+The released checkpoint always sings — an empty lyrics box still produces
+vocals, because it has no instrumental mode. Ticking **Music only** (or simply
+leaving the lyrics empty) loads the community
+[instrumental adapter](https://huggingface.co/Mothersuperior/YuE2-instrumental-cot-full-loras),
+a ~0.6 GB AR LoRA folded into the base weights, and swaps the lyrics box for a
+**section plan** of bracketed tags such as `[intro]` / `[verse]` / `[chorus]`.
+The Anime tab always sends cues in this mode.
+
+The adapter is **CC BY-NC 4.0**, like the base checkpoint, so this is a
+non-commercial path. It is a community adapter whose output is verified to run
+and produce audio; the absence of vocals has not been checked with a vocal
+classifier, so listen before relying on it.
+
+Song length is exact: YuE2 emits 25 codec frames per second of audio
+(48000 Hz / 1920x downsampling), so a 90-second request is a 2250-token budget.
+It is a **maximum** — the model still stops early when the song ends naturally.
+
+Two settings appear on both a simple tab and `Advanced`. The Advanced control
+defaults to 0, meaning "use the friendly control"; a positive value overrides it.
+
+**Performance profiles.** `YuE2Pipeline(perf=...)` accepts `reference`
+(the pinned release flags, the default off CUDA), `balanced` (fuses QKV and
+gate/up projections — same arithmetic, fewer kernel launches, the default on
+CUDA), or `fast` (adds TF32 and cuDNN autotuning, which **change results**).
+
+**Measure it.**
+
+```bash
+make bench                                                 # profile comparison
+uv run pytest tests/ -m slow -s                            # GPU timing + UI end-to-end
+```
+
+Two hardware notes for the RTX 3090 (compute capability 8.6):
+
+- `quantization="fp8"` is unavailable — FP8 kernels require >= 8.9.
+- The optional vLLM backend needs a CUDA toolkit; without `nvcc` it cannot
+  start unless `YUE2_VLLM_ENFORCE_EAGER=1` is set.
+- Cover transcription needs the small `cover` group (installed by default) and
+  downloads SheetSage2 (~2.8 GB) on first use.
+
 ## Cover a song
 
 Transcribe a source recording with **[🤗 SheetSage2](https://huggingface.co/m-a-p/SheetSage2)**, review its melody ABC, and provide new lyrics or a target style. For covers, use **`cot="melody"` and a score without chord symbols** so the accompaniment can adapt to the new style.

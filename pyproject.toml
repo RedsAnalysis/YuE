@@ -24,6 +24,44 @@ dependencies = [
 [project.optional-dependencies]
 fast = ["vllm==0.19.0", "triton==3.6.0"]
 test = ["pytest==9.0.3"]
+# Gradio is pinned below 6.18: from 6.18 on it requires huggingface-hub>=1.2,
+# which conflicts with the transformers 4.57.6 requirement of hub<1.0.
+ui = ["gradio==6.14.0"]
+# Reference-audio (cover) transcription. SheetSage2's own requirements.txt pins
+# torch 2.8 / transformers 4.45, but the published YuE2 Space loads it on the
+# current torch 2.10 + transformers 4.57 stack with only these audio helpers, so
+# the pins are not required here.
+cover = [
+    "torchaudio==2.10.0",
+    "scipy==1.13.1",
+    "mir_eval==0.8.2",
+    "pretty_midi==0.2.10",
+    "mido==1.3.3",
+]
+# Beat tracking for the loop builder. It is the only heavy addition
+# (numba/llvmlite), so it stays a separate extra.
+loop = ["librosa>=0.11,<0.12"]
+
+# Dependency groups are the uv-native equivalent of the extras above and are
+# what `uv sync` installs by default. They are duplicated deliberately: extras
+# stay authoritative for `pip install .[ui]`, while groups let a plain
+# `uv sync` produce a checkout that can run the UI and the test suite.
+[dependency-groups]
+dev = ["pytest==9.0.3"]
+ui = ["gradio==6.14.0"]
+cover = [
+    "torchaudio==2.10.0",
+    "scipy==1.13.1",
+    "mir_eval==0.8.2",
+    "pretty_midi==0.2.10",
+    "mido==1.3.3",
+]
+loop = ["librosa>=0.11,<0.12"]
+
+[tool.uv]
+# `ui`, `cover` and `loop` are default groups because app.py is the primary
+# entry point of this working copy; `fast` (vLLM) is never installed implicitly.
+default-groups = ["dev", "ui", "cover", "loop"]
 
 [project.urls]
 Repository = "https://github.com/multimodal-art-projection/YuE"
@@ -39,3 +77,6 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "slow: loads the real checkpoint on the GPU and measures inference time",
+]
